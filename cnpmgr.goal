@@ -1,0 +1,125 @@
+init module{
+	knowledge{
+		
+		% those three predicates inform the manager about how many
+		% elevator agents are operating in the environment
+		elevator(E) :- agent(E),not(me(E)).
+		listOfElev(List) :- findall(E, elevator(E),List).
+		elevatorAgents(Number) :- listOfElev(List),length(List,Number).
+		
+		% check if List 1 has the same members of List 2, regardless of duplicates
+		sameMember([],_).
+		sameMember([H|T],L) :- member(H,L),sameMember(T,L).
+		
+		% check if two lists have the same elements regardless of elements ordering
+		isSubset([],_).
+		isSubset([H|T],Y):- member(H,Y), select(H,Y,Z), isSubset(T,Z).
+		
+		% a predicate to check if the all bids for a specific auction are collected
+		allBidsCollected(Level,Dir) :- findall(A,fsBid(Level,Dir,A,_),L), listOfElev(ListEle), sameMember(ListEle,L).
+		
+	}
+	
+	beliefs{
+		doDummy(0).
+	}
+	
+	goals{
+	}
+	
+	actionspec{
+		% dummyAction is an internal action executed at every cycle in order
+		% to be sure that the event module is always executed as well
+		% it does not do anything
+		dummyAction(D)@int{
+			pre{}
+			post{}
+		}
+		
+	}
+}
+
+main module{
+	program{
+		
+		% invoke dummyAction in order for the manager to always run the event module
+		if bel(doDummy(D)) then dummyAction(D).
+	}
+}
+
+
+event module{
+	program{
+		%%%%	MESSAGES	%%%%
+		% floorCount(N) --> message received containing the number of floors in the environment
+		% floorCall(L,D) --> a button in floor L with direction D was pressed, manager is informed
+		% fsBidMessage(L,D) --> a request from the manager to an agent to bid for an auction
+		%						for a floor F with direction D
+		% fsBid(L,D,A,FS) --> a message from agent A containing its bid with figure of suitability
+		%					  score FS
+		% task(L,D) --> send to an elevator a task when it "wins" the auction
+		% completedTask(L,D) --> received by the manager when a task was completed by an agent
+		% abortTask(L,D) --> when an elevator aborts a task the manager is informed in order to act
+		%					accordingly
+		
+		% A message sent by the elevator agents at the beginning informing the manager about the number of floors in the environment
+		forall bel(received(Sender,floorCount(N)),not(floorCount(_))) do insert(floorCount(N)) + delete(received(Sender,floorCount(N))).
+		
+		% When a floorCall is received for the first time open an auction for that 
+		forall bel(received(Sender,floorCall(Level,Dir)),not(auctionOpen(Level,Dir))) do insert(auctionOpen(Level,Dir))
+																			 + delete(received(Sender,floorCall(Level,Dir))).
+			
+		% Send requests for bids to the elevators for a auctions that are open
+		forall bel(agent(ElevAgent),not(me(ElevAgent)),auctionOpen(Level,Dir),not(fsBidRequest(Level,Dir,ElevAgent))) do (ElevAgent).send(fsBidMessage(Level,Dir))
+																							   + insert(fsBidRequest(Level,Dir,ElevAgent))
+																							   + delete(sent(ElevAgent,fsBidMessage(Level,Dir))).
+		
+		% handle incoming bids from the elevator agents and store them 
+		forall bel(received(Agent,fsBid(Level,Dir,Agent,FsScore))) do {
+			forall bel(fsBid(Level,Dir,Agent,X)) do delete (fsBid(Level,Dir,Agent,X)).
+			if true then  insert(fsBid(Level,Dir,Agent,FsScore))
+						+ insert(bidHistory(Level,Dir,Agent,FsScore))	
+						+ delete(received(Agent,fsBid(Level,Dir,Agent,FsScore))).
+		}
+		
+		
+		% check if all bids for an open auction are collected
+		% assign task to the elevator with the highest bid
+		% if all elevators are unwilling to take the call then declare auction as failed
+		forall bel(auctionOpen(Level,Dir),allBidsCollected(Level,Dir),not(taskAssigned(Level,Dir))) do {
+			if bel(fsBid(Level,Dir,A,FsMax),fsBid(Level,Dir,B,FsOther),not(FsOther > FsMax), FsMax > 0) then (A).send(task(Level,Dir))		
+																											 + insert(tryAssign(A,Level,Dir,FsMax))
+																								   			 + insert(taskAssigned(Level,Dir))
+																								   			 + delete(sent(A,task(Level,Dir))).											   
+			if bel(fsBid(Level,Dir,A,FsMax),fsBid(Level,Dir,B,FsOther),not(FsOther > FsMax), FsMax =< 0) then insert(fail(Level,Dir)).
+	
+		}
+		
+		% if the auction failed then reset it until a we get a good bidding
+		forall bel(fail(Level,Dir)) do {
+			if true then delete (fail(Level,Dir)).
+			forall bel(fsBidRequest(Level,Dir,X)) do delete(fsBidRequest(Level,Dir,X)).
+			forall bel(fsBid(Level,Dir,X,FsScore)) do delete(fsBid(Level,Dir,X,FsScore)).
+		}
+		
+		% if you received a completedTask message you have to clean up 
+		% everything related to that task and the auction it was referring to
+		forall bel(received(Sender,completedTask(Level,Dir))) do {		
+			forall bel(fsBidRequest(Level,Dir,X)) do delete(fsBidRequest(Level,Dir,X)).
+			forall bel(auctionOpen(Level,Dir)) do delete(auctionOpen(Level,Dir)).
+			forall bel(fsBid(Level,Dir,X,FsScore)) do delete(fsBid(Level,Dir,X,FsScore)).
+			if bel(taskAssigned(Level,Dir)) then delete(taskAssigned(Level,Dir)).
+			if true then delete(received(Sender,completedTask(Level,Dir))).
+		}
+		
+		% if a task that was initially assigned to an elevator is eventually
+		% aborted you have to rest the auction and request for new bids again
+		forall bel(received(Sender,abortTask(Level,Dir))) do {
+			if true then delete(received(Sender,abortTask(Level,Dir)))
+						+ insert(auctionOpen(Level,Dir)).
+			if bel(taskAssigned(Level,Dir)) then delete(taskAssigned(Level,Dir)).
+			forall bel(fsBidRequest(Level,Dir,X)) do delete(fsBidRequest(Level,Dir,X)).
+			forall bel(fsBid(Level,Dir,X,FsScore)) do delete(fsBid(Level,Dir,X,FsScore)).
+		}
+	}
+}

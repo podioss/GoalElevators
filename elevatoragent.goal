@@ -1,0 +1,221 @@
+init module {
+	knowledge{
+		% onRoute succeeds when Level is in the current direction Dir relative to the floor the agent is at.
+		% Note that onRoute only succeeds when the elevator car is "docked", i.e. atFloor(Here) succeeds for
+		% some floor (see also the belief section).
+		onRoute(Level, Dir) :- atFloor(Here), dir(Dir), Diff is Level-Here, (Diff<0 -> Dir=down; Dir=up).
+		
+		% myOnRoute succeeds if the level requested is in the current direction the elevator is heading
+		% it succeeds at every possible position of the elevator
+		myOnRoute(Level) :- currentPos(Pos), myDir(CurDir), Diff is Level-Pos, (Diff<0 -> Dir=down; Dir=up), CurDir==Dir.
+		
+		% fsBid is changed, only the same direction will the elevator pick up people
+		onMyDirection(Lev,D,Pos) :- myDir(CurDir),D==CurDir,Diff is Lev-Pos,(Diff<0 -> Dir=down; Dir=up), Dir==CurDir.
+		
+		% Status --> current position, floor count and current capacity excess
+		elevatorStatus(P,C,FC) :- currentPos(P), capacity(Total), personsOnElev(Carrying), C is (Total - Carrying),floorCount(FC).
+		
+		% Check if the elevator is half-full or not
+		lessHalf(CapX):- capacity(Total), Limit is Total*0.5,CapX >= Limit.
+		
+		
+		% The bid predicates of the elevator agents depend on the level(Lev) and direction(D) of the floor call
+		% as well as the current status of the elevator
+		% If the elevator is idle it will always bid the highest possible value
+		% A moving elevator will only bid if the call is in the current direction of the elevator and the intented 
+		% direction is also the same. In every other occassion the elevator bids 0
+		fsBid(Lev,D,_,Fs) :- idleStatus(y),Fs is 250.
+		fsBid(Lev,D,_,Fs) :- idleStatus(n),elevatorStatus(Pos,CapX,F),lessHalf(CapX),onMyDirection(Lev,D,Pos),goalNum(N),Fs is 150-N. 
+		fsBid(Lev,D,_,Fs) :- idleStatus(n),elevatorStatus(Pos,CapX,F),lessHalf(CapX),not(onMyDirection(Lev,D,Pos)),Fs is 0.
+		fsBid(Lev,D,_,Fs) :- idleStatus(n),elevatorStatus(Pos,CapX,F),not(lessHalf(CapX)),onMyDirection(Lev,D,Pos),Fs is 0.
+		fsBid(Lev,D,_,Fs) :- idleStatus(n),elevatorStatus(Pos,CapX,F),not(lessHalf(CapX)),not(onMyDirection(Lev,D,Pos)),Fs is 0.
+			
+	}
+	beliefs{
+		% The direction that will be shown to the people at the next stop.
+		% This remains the intended direction of movement until there are no more
+		% planned stops in that direction.
+		dir(down).
+		
+		% myDir holds the current heading direction of the elevator
+		myDir(up).	%the initial direction is always going up
+		
+		% Initially, it is unknown whether doors are open or closed.
+		doorState(unknown).
+		
+		% currentPos holds the current position of the elevator (float number)
+		currentPos(1).  %The initial position of every elevator is 1
+		
+		% the current persons that the elevator carries
+		personsOnElev(0). % At start no persons are in the elevator
+		
+		% the number of goals the elevator has at the moment
+		goalNum(0).	%initial goal number is 0
+		
+		% a predicate that let us know if the elevator is idle or not
+		idleStatus(y).
+		
+		% a predicate to prevent double opening of the doors
+		actionRequest(1,up).
+		taskNum(0).
+		currentBid(0,up,0).	
+		
+	}
+	goals{
+		% no initial goals for the agents
+	}
+	actionspec{
+		% The action goto(Level, Dir) moves the elevator car to floor Level. It can
+		% only be performed even if the elevator is moving.
+		% When the elevator arrives at the requested floor, the Dir light will turn on.
+		% myDir is updated when a goto action is about to be performed so as to show 
+		% the current heading direction
+		goto(Level, Dir) {
+		   pre{ not(actionRequest(Level,Dir)), 
+		   		dir(DirNow), currentPos(Pos),
+		   		doorState(closed),
+		   		Diff is Level-Pos,
+		   		myDir(OldDir),
+		   		(Diff<0 -> NewDir=down; NewDir=up)}
+		   post{ not(dir(DirNow)),
+		   		 dir(Dir),
+		   		 not(myDir(OldDir)),
+		   		 myDir(NewDir),
+		   		 not(task(Level,Dir))}	
+		}
+	}
+}
+	
+main module {
+	program {
+		
+		% Goto the nearest floor that the agent wants to go to.
+		if a-goal( atFloor(Level),dir(Dir)),
+			bel(currentPos(Here), Distance is abs(Level-Here),actionRequest(OldLevel,OldDir))		
+			,not(a-goal( atFloor(OtherLevel),OtherDistance is abs(OtherLevel-Here), OtherDistance<Distance) )
+		then goto(Level, Dir)+ insert(not(actionRequest(OldLevel,OldDir)),actionRequest(Level,Dir)). 						%+ insert(goingTo(Level,Dir)).
+		
+		%if a-goal(atFloor(FormerLevel),dir(FormerDir)),
+		%	bel(atFloor(Here), wantToGo(atFloor(Level),dir(Dir)), wantToGo(atFloor(OtherLevel),dir(OtherDir)), Distance is abs(Level-Here),
+		%						OtherDistance is abs(OtherLevel-Here), not(OtherDistance<Distance))
+		%	 then drop(atFloor(FormerLevel),dir(FormerDir)) + adopt( atFloor(Level),dir(Dir)).
+		
+		
+		%%if a-goal(atFloor(Level),dir(Dir)),bel(buttonInElevator(Level)) then goto(Level,Dir).
+	}
+}
+
+	
+event module {
+	program {
+		
+		%	capacity and floorCount percepts stored in the belief base	%
+		%	update elevator's current position	%
+		%	update the number of persons currently in the elevator	%
+		%	update the door state of the elevator (percept is sent only when state is changed)	%
+		%	hold the time
+		if bel(percept(capacity(Car))) then insert(capacity(Car)).
+		if bel(percept(floorCount(N))) then insert(floorCount(N)) + (manager).send(floorCount(N)).
+		forall bel(percept(carPosition(NewPos)),currentPos(OldPos), NewPos \== OldPos) do insert( not(currentPos(OldPos)),currentPos(NewPos)).
+		forall bel(percept(people(New)),personsOnElev(Old),Now \== Old) do insert( not(personsOnElev(Old)),personsOnElev(New)).
+		forall bel( percept(doorState(New)), doorState(Old) ) do insert( not(doorState(Old)), doorState(New) ).
+		forall bel(percept(timefactor(T)),timeSpeed(OldT), T \== OldT) do insert( not(timeSpeed(OldT)),timeSpeed(T)).
+		
+		
+		
+		% If the elevator reached floor with a specific direction and it was in its goals
+		% then delete the goal and inform the manager that the task was completed
+		if bel(atFloor(Here),dir(Dir),myGoals(Here,Dir), goalNum(N), Ne is N-1)	then delete(myGoals(Here,Dir))
+																				+ (manager).send(completedTask(Here,Dir))
+																				+ delete(task(Here,Dir))+delete(sent(manager,completedTask(Here,Dir)))
+																				+delete(goalNum(N)) + insert(goalNum(Ne)).
+		
+		
+		% Do the same as before for goals related only to buttons pressed inside the elevator
+		if bel(atFloor(Here),myGoals(Here,button), goalNum(N), Ne is N-1) then delete(myGoals(Here,button))
+																		 + delete(goalNum(N))
+																		 + insert(goalNum(Ne)).
+		
+		
+		% Be sure to drop goals if a floor call has already been serviced
+		% also be sure to inform the manager as well			
+		if bel(myGoals(Level,Dir),not(percept(fButtonOn(Level,Dir))),goalNum(N),Ne is N-1) then drop (atFloor(Level),dir(Dir))
+																						   + delete(myGoals(Level,Dir))
+																						   +(manager).send(completedTask(Level,Dir))
+																						   + delete(task(Level,Dir))
+																						   + delete(sent(manager,completedTask(Level,Dir)))
+																						   + delete(goalNum(N))
+																						   + insert (goalNum(Ne)).
+		
+		% If a percept of fButtonOn is not received update your belief base
+		forall bel( floorCall(Level,Dir,N),not(percept(fButtonOn(Level,Dir)))) do delete( floorCall(Level,Dir,N) ).			
+		
+		% The next two predicates update the belief base of the elevator regarding whether
+		% it is docked at a specific floor or not at the moment
+		forall bel( percept(atFloor(Level)), not(atFloor(Level)) ) do insert( atFloor(Level) ).
+		forall bel( atFloor(Level), not(percept(atFloor(Level))) ) do delete( atFloor(Level) ).
+		
+		% Send message to the manager when you percept a floor call
+		forall bel( percept(fButtonOn(Level,Dir)), not(floorCall(Level,Dir,_)) ) do insert( floorCall(Level,Dir,0) )
+																			   + (manager).send(floorCall(Level,Dir))
+																			   + delete(sent(manager,floorCall(Level,Dir))).
+	
+		forall bel( percept(fButtonOn(Level,Dir)),floorCall(Level,Dir,N),Ne is N+1) do delete(floorCall(Level,Dir,N))+
+																			insert (floorCall(Level,Dir,Ne)).
+																																			
+		if bel(atFloor(Here),dir(Dir),myGoals(Here,Dir), doorState(closed), percept(fButtonOn(Here,Dir)),floorCall(Here,Dir,N))	
+																					then delete(floorCall(Here,Dir,N)).
+				
+		% When a fsBidMessage is received the elevator is responding with a bid 
+		forall bel(received(manager,fsBidMessage(Level,Dir)),me(A)) do{
+			forall bel(currentBid(L,D,S)) do delete(currentBid(L,D,S)).
+			if bel(fsBid(Level,Dir,A,FsScore)) then (manager).send(fsBid(Level,Dir,A,FsScore))
+													+ insert(currentBid(Level,Dir,FsScore))
+													+ delete(received(manager,fsBidMessage(Level,Dir)))
+													+ delete(sent(manager,fsBid(Level,Dir,A,FsScore))).
+		} 
+		
+		% When manager is assigning a task to an elevator adopt a goal to serve that elevator
+		forall bel(received(manager,task(Level,Dir)),not(task(Level,Dir)),percept((fButtonOn(Level,Dir))),taskNum(N), Ne is N+1, goalNum(Num),NNum is Num+1)
+							 	 do adopt( atFloor(Level),dir(Dir))
+								 + insert(task(Level,Dir)) 
+								 + insert(myGoals(Level,Dir)) 
+								 + delete(goalNum(Num)) + insert(goalNum(NNum))
+								 + insert(taskHistory(Level,Dir,Ne,manager))
+								 + delete(taskNum(N)) + insert(taskNum(Ne))
+								 + delete(received(manager,task(Level,Dir))).
+								 
+								 	
+		% THandle buttons pressed by people inside the elevator, avoid duplicating goals
+		forall bel( percept(eButtonOn(Level)),dir(Dir),taskNum(N), Ne is N+1, goalNum(Num),NNum is Num+1, not(myGoals(Level,_))) 
+											do adopt( atFloor(Level), dir(Dir) )
+											+ insert(myGoals(Level,button))
+											+ delete(taskNum(N)) + insert(taskNum(Ne))
+											+ delete(goalNum(Num)) + insert(goalNum(NNum))
+											+ insert(taskHistory(Level,Dir,Ne,ebutton)).
+		
+		
+		% Check if your are idle and add it to your belief base (i.e no goals,atFloor and doors closed)
+		if not(goal(atFloor(_),dir(_))),bel(atFloor(SomeWhere),doorState(closed),idleStatus(n)) then delete(idleStatus(n))+insert(idleStatus(y)).
+		% If you have any goal then you are not idle
+		if goal(atFloor(_),dir(_)),bel(idleStatus(y)) then delete(idleStatus(y)) + insert(idleStatus(n)).
+
+			
+		% Change direction if your are at the top floor or ground floor
+		if bel(floorCount(N),atFloor(N),myDir(Dir),Dir==up,DirNew = down) then insert(not(myDir(Dir)),myDir(DirNew)).
+		if bel(atFloor(1),myDir(Dir),Dir==down,DirNew=up) then insert(not(myDir(Dir)),myDir(DirNew)).
+		
+		% If you are full then you have to inform the manager that you abort all goals
+		% that are related with floor calls. You must first facilitate the people you are 
+		% currently carrying in order to join a new auction again. Also make available
+		% those aborted tasks to possible other elevators that might be able to now bid for 
+		% those.
+		if bel(capacity(N),personsOnElev(P),P==N) then{
+			forall bel(myGoals(Level,Dir)) do drop(atFloor(Level),dir(Dir))
+										   + delete(task(Level,Dir))
+										   + delete(myGoals(Level,Dir))
+										   + (manager).send(abortTask(Level,Dir))
+										   + delete(sent(manager,abortTask(Level,Dir))).
+		}
+	}
+}

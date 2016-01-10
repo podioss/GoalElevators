@@ -1,0 +1,25 @@
+environment {
+ env = "ElevatorSim-1.3.2.jar".
+ init = [
+	Simulation = "Random Rider Insertion", 
+	Floors = 25, Cars = 3,
+	RandomSeed=6353, Capacity=20, People=100, 
+	InsertionTime=50000, 
+	TimeFactor = 0, Controller = "EIS Controller",
+	InsertionTimeHr = 0.3, StandardDev = 1,
+	NPeoplePerFloor=8, Insert2ndReqAt = 29000
+ ].
+}
+
+agentfiles {
+	"elevatoragent.goal" [name=file1] .
+	"cnpmgr.goal" [name=managerfile].
+}
+
+launchpolicy {
+	
+    when [type=car,max=5]@env do launch elevator:file1 .
+    launch manager:managerfile.
+    
+    
+}
